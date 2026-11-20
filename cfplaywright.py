@@ -13,8 +13,8 @@ import urllib.request
 import urllib.parse
 from patchright.sync_api import sync_playwright
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8457231523:AAH-idCVWIRWRnzkIHKcm-24wvpjkCNAbuc")
-CHAT_ID = os.environ.get("CHAT_ID", "1936436999")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+CHAT_ID = os.environ.get("CHAT_ID", "")
 
 def send_telegram_photo(photo_path: str, caption: str = ""):
     if not os.path.exists(photo_path):
@@ -230,5 +230,5 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
 
 if __name__ == "__main__":
     target = sys.argv[1] if len(sys.argv) > 1 else "https://stockx.com"
-    proxy = os.environ.get("PROXY_URL", "http://hzvrsvul-rotate:je47prui48ga@p.webshare.io:80")
+    proxy = os.environ.get("PROXY_URL", "")
     open_with_playwright(target, proxy_url=proxy)
