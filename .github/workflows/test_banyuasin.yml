@@ -28,10 +28,12 @@ jobs:
             sudo apt-get install -y -qq google-chrome-stable
           fi
           echo "Chrome ready: $(google-chrome --version)"
-          chmod +x bin/cfsolve
+          chmod +x bin/capture_cctv
 
       - name: Run CFPlaywright Banyuasin Test
         env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
           PROXY_URL: "http://hzvrsvul-rotate:je47prui48ga@p.webshare.io:80"
           PYTHONUNBUFFERED: "1"
         run: |

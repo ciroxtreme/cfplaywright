@@ -9,12 +9,55 @@ import time
 import json
 import shutil
 import subprocess
+import urllib.request
 import urllib.parse
 from patchright.sync_api import sync_playwright
 
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8457231523:AAH-idCVWIRWRnzkIHKcm-24wvpjkCNAbuc")
+CHAT_ID = os.environ.get("CHAT_ID", "1936436999")
+
+def send_telegram_photo(photo_path: str, caption: str = ""):
+    if not os.path.exists(photo_path):
+        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    try:
+        boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+        body = []
+        body.append(f"--{boundary}".encode())
+        body.append(f'Content-Disposition: form-data; name="chat_id"'.encode())
+        body.append(''.encode())
+        body.append(str(CHAT_ID).encode())
+        
+        if caption:
+            body.append(f"--{boundary}".encode())
+            body.append(f'Content-Disposition: form-data; name="caption"'.encode())
+            body.append(''.encode())
+            body.append(caption[:1024].encode())
+
+        filename = os.path.basename(photo_path)
+        body.append(f"--{boundary}".encode())
+        body.append(f'Content-Disposition: form-data; name="photo"; filename="{filename}"'.encode())
+        body.append('Content-Type: image/png'.encode())
+        body.append(''.encode())
+        with open(photo_path, "rb") as f:
+            body.append(f.read())
+        body.append(f"--{boundary}--".encode())
+        body.append(''.encode())
+
+        data = b"\r\n".join(body)
+        headers = {
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(data))
+        }
+        req = urllib.request.Request(url, data=data, headers=headers)
+        urllib.request.urlopen(req, timeout=20)
+        print(f"[✓] Foto screenshot berhasil dikirim ke Telegram Tuan Ciro: {photo_path}")
+    except Exception as e:
+        print(f"[-] Telegram Send Photo Error: {e}")
+
 def solve_cloudflare_clearance(target_url: str, proxy: str = None) -> str:
     """
-    Panggil binary Rust cfsolve untuk menyelesaikan Cloudflare challenge
+    Panggil binary Rust capture_cctv / cfsolve untuk menyelesaikan Cloudflare challenge
     dan mengembalikan token cf_clearance dalam hitungan milidetik.
     """
     out_dir = f"/tmp/cf_out_{int(time.time()*1000)}"
@@ -22,40 +65,36 @@ def solve_cloudflare_clearance(target_url: str, proxy: str = None) -> str:
         shutil.rmtree(out_dir)
     os.makedirs(out_dir, exist_ok=True)
 
-    bin_path = os.path.abspath("bin/cfsolve")
-    if not os.path.exists(bin_path):
-        bin_path = "/home/container/.local/bin/cfsolve-v5-cli"
-
+    bin_path = os.path.abspath("bin/capture_cctv")
     fp_path = os.path.abspath("profiles/safari-26-ios.json")
 
     cmd = [
         bin_path,
-        "--page", target_url,
+        fp_path,
         out_dir,
-        "--solve",
-        "--fingerprint", fp_path
+        "1"
     ]
 
+    env = os.environ.copy()
     if proxy:
-        cmd.extend(["--proxy", proxy])
+        env["CF_PROXY"] = proxy
 
-    print(f"⚡ [CFSolve] Menembus Cloudflare Turnstile untuk {target_url}...")
+    print(f"⚡ [CFSolve Engine] Menembus Cloudflare Turnstile untuk {target_url}...")
     t0 = time.time()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=40)
         elapsed = time.time() - t0
         output = proc.stdout + proc.stderr
 
-        # Cari cf_clearance=<token>
         import re
-        m = re.search(r"cf_clearance=([a-zA-Z0-9_\-\.]+)", output)
+        m = re.search(r"cf_clearance:\s*([a-zA-Z0-9_\-\.]+)", output)
         if m:
-            token = m.group(1)
-            print(f"✓ [CFSolve] Sukses ditembus dalam {elapsed:.2f}s! cf_clearance: {token[:25]}...")
+            token = m.group(1).strip()
+            print(f"✓ [CFSolve] Sukses ditembus dalam {elapsed:.2f}s! cf_clearance: {token[:30]}...")
             return token
         else:
             print(f"[-] [CFSolve] Token tidak ditemukan di output (Exit code {proc.returncode}):")
-            print(output[:300])
+            print(output[:400])
     except Exception as e:
         print(f"[-] [CFSolve Error]: {e}")
     finally:
@@ -64,9 +103,6 @@ def solve_cloudflare_clearance(target_url: str, proxy: str = None) -> str:
     return ""
 
 def open_with_playwright(target_url: str, proxy_url: str = None):
-    """
-    Buka Playwright dengan Chrome resmi + CFSolve Injection + Extension.
-    """
     # 1. Selesaikan challenge Cloudflare via CFSolve Engine
     clearance_token = solve_cloudflare_clearance(target_url, proxy=proxy_url)
 
@@ -128,7 +164,7 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
         print(f"🌐 Mengakses {target_url}...")
         t_nav = time.time()
         page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-        time.sleep(4)
+        time.sleep(5)
 
         title = page.title()
         curr_url = page.url
@@ -136,11 +172,15 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
         print(f"📄 Judul Halaman: {title}")
         print(f"📄 URL Saat Ini: {curr_url}")
 
-        page.screenshot(path="cctv_banyuasin_playwright.png")
-        print("📸 Screenshot tersimpan ke 'cctv_banyuasin_playwright.png'!")
+        screenshot_path = "cctv_banyuasin_playwright.png"
+        page.screenshot(path=screenshot_path)
+        print(f"📸 Screenshot tersimpan ke '{screenshot_path}'!")
 
-        # Tunggu 3 detik sebelum selesai
-        time.sleep(3)
+        # 4. Kirim hasil screenshot ke chat Telegram Tuan Ciro sesuai SOP
+        caption = f"📹 Hasil Pembukaan CCTV Banyuasin via CFPlaywright (Chrome Extension + CFSolve Engine)\n📄 Judul: {title}\n🌐 URL: {curr_url}"
+        send_telegram_photo(screenshot_path, caption=caption)
+
+        time.sleep(2)
         browser.close()
 
 if __name__ == "__main__":
