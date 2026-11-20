@@ -148,8 +148,12 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
         )
 
         context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            viewport={"width": 375, "height": 667},
+            device_scale_factor=2,
+            is_mobile=True,
+            has_touch=True,
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.3 Mobile/15E148 Safari/604.1",
+            locale="id-ID"
         )
 
         parsed_url = urllib.parse.urlparse(target_url)
