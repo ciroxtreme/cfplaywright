@@ -1,5 +1,5 @@
 """
-CFPlaywright Engine (High-Performance Cloudflare Solver + Playwright Native Integration)
+CFPlaywright Engine (High-Performance Cloudflare & Google reCAPTCHA v3 Solver + Playwright Native Integration)
 Author: Ciro & Antigravity
 """
 
@@ -54,6 +54,29 @@ def send_telegram_photo(photo_path: str, caption: str = ""):
         print(f"[✓] Foto screenshot berhasil dikirim ke Telegram Tuan Ciro: {photo_path}")
     except Exception as e:
         print(f"[-] Telegram Send Photo Error: {e}")
+
+def solve_recaptcha_v3_on_page(page, proxy: str = None) -> str:
+    """
+    Deteksi dan selesaikan Google reCAPTCHA v3 secara otonom di halaman Playwright via PyPasser.
+    """
+    try:
+        from pypasser.captcha.recaptcha import v3
+        print("🔍 [PyPasser] Memindai Google reCAPTCHA v3 di halaman...")
+        res = v3.solve(page=page, proxy=proxy, timeout=15)
+        if res and res.token:
+            token = res.token
+            print(f"✓ [PyPasser reCAPTCHA v3] Berhasil dipecahkan! Token: {token[:25]}...")
+            
+            # Suntikkan token ke input g-recaptcha-response bila ada di form
+            page.evaluate("""(tok) => {
+                const inputs = document.querySelectorAll('[name="g-recaptcha-response"], textarea#g-recaptcha-response');
+                inputs.forEach(el => { el.value = tok; });
+                window.__grecaptcha_v3_token = tok;
+            }""", token)
+            return token
+    except Exception as e:
+        print(f"[-] [PyPasser Notice]: {e}")
+    return ""
 
 def solve_cloudflare_clearance(target_url: str, proxy: str = None) -> str:
     out_dir = f"/tmp/cf_out_{int(time.time()*1000)}"
@@ -178,16 +201,18 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
         except Exception as e:
             print(f"[Nav Notice] {e}")
 
-        # Tunggu sampai halaman ter-render (katalog sneakers / search bar)
-        for w in range(10):
+        # Selesaikan Google reCAPTCHA v3 jika ada di DOM
+        solve_recaptcha_v3_on_page(page, proxy=proxy_url)
+
+        # Tunggu sampai halaman ter-render
+        for w in range(8):
             time.sleep(2)
             title = page.title()
             print(f"⏳ Detik {w*2}: Judul Halaman = '{title}' (URL: {page.url})")
-            if "stockx" in title.lower() or "sneakers" in title.lower() or "buy & sell" in title.lower():
-                print("✓ Berhasil masuk ke katalog StockX!")
+            if any(k in title.lower() for k in ["stockx", "sneakers", "cctv", "home", "dashboard"]):
                 break
 
-        time.sleep(3)
+        time.sleep(2)
         title = page.title()
         curr_url = page.url
         print(f"📄 Status Akhir: Judul='{title}' | URL='{curr_url}'")
@@ -197,7 +222,7 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
         print(f"📸 Screenshot tersimpan ke '{screenshot_path}'!")
 
         # Kirim hasil screenshot ke chat Telegram Tuan Ciro
-        caption = f"🛒 Hasil Pembukaan {target_url} via Patchright + Chrome Official\n📄 Judul: {title}\n🌐 URL: {curr_url}"
+        caption = f"🛡️ Hasil CFPlaywright (Cloudflare + reCAPTCHA v3 + Patchright)\n📄 Judul: {title}\n🌐 URL: {curr_url}"
         send_telegram_photo(screenshot_path, caption=caption)
 
         time.sleep(2)
