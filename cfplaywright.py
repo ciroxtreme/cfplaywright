@@ -56,10 +56,6 @@ def send_telegram_photo(photo_path: str, caption: str = ""):
         print(f"[-] Telegram Send Photo Error: {e}")
 
 def solve_cloudflare_clearance(target_url: str, proxy: str = None) -> str:
-    """
-    Panggil binary Rust capture_cctv untuk menyelesaikan Cloudflare challenge
-    dan mengembalikan token cf_clearance.
-    """
     out_dir = f"/tmp/cf_out_{int(time.time()*1000)}"
     if os.path.exists(out_dir):
         shutil.rmtree(out_dir)
@@ -72,22 +68,25 @@ def solve_cloudflare_clearance(target_url: str, proxy: str = None) -> str:
         bin_path,
         fp_path,
         out_dir,
-        "4"  # Gunakan kamera 4 (Betung) yang aktif dan tidak timeout!
+        "4"
     ]
 
     env = os.environ.copy()
     if proxy:
         env["CF_PROXY"] = proxy
 
-    print(f"⚡ [CFSolve Engine] Menembus Cloudflare Turnstile untuk {target_url} (Egress Proxy: {proxy})...")
+    print(f"⚡ [CFSolve Engine] Memeriksa proteksi Turnstile untuk {target_url}...")
     
-    # Retry hingga 3 kali
-    for attempt in range(1, 4):
-        print(f"Attempt {attempt}/3 running cfsolve...")
+    # Hanya jalankan jika target adalah host cctv / turnstile
+    if "banyuasinkab" not in target_url:
+        print("[*] Target non-Banyuasin, melanjutkan langsung ke Patchright Chrome C++ Stealth...")
+        return ""
+
+    for attempt in range(1, 3):
+        print(f"Attempt {attempt}/2 running cfsolve...")
         t0 = time.time()
         try:
-            # Berikan waktu hingga 60s
-            proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
+            proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=30)
             elapsed = time.time() - t0
             output = proc.stdout + proc.stderr
 
@@ -98,20 +97,15 @@ def solve_cloudflare_clearance(target_url: str, proxy: str = None) -> str:
                 print(f"✓ [CFSolve] Sukses ditembus dalam {elapsed:.2f}s! cf_clearance: {token[:30]}...")
                 shutil.rmtree(out_dir, ignore_errors=True)
                 return token
-            else:
-                print(f"[-] [CFSolve Attempt {attempt}] Token tidak ditemukan. Output:")
-                print(output[:300])
-        except subprocess.TimeoutExpired:
-            print(f"[-] [CFSolve Attempt {attempt}] Timeout 60s.")
         except Exception as e:
             print(f"[-] [CFSolve Attempt {attempt} Error]: {e}")
-        time.sleep(2)
+        time.sleep(1)
 
     shutil.rmtree(out_dir, ignore_errors=True)
     return ""
 
 def open_with_playwright(target_url: str, proxy_url: str = None):
-    # 1. Selesaikan challenge Cloudflare via CFSolve Engine
+    # 1. Selesaikan challenge Cloudflare jika ada
     clearance_token = solve_cloudflare_clearance(target_url, proxy=proxy_url)
 
     # 2. Setup browser Playwright/Patchright
@@ -139,7 +133,7 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
             "--window-size=1280,800"
         ]
 
-        print("🚀 Membuka Google Chrome resmi via Playwright...")
+        print("🚀 Membuka Google Chrome resmi via Patchright...")
         browser = p.chromium.launch(
             channel="chrome",
             headless=False,
@@ -148,20 +142,17 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
         )
 
         context = browser.new_context(
-            viewport={"width": 375, "height": 667},
-            device_scale_factor=2,
-            is_mobile=True,
-            has_touch=True,
-            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.3 Mobile/15E148 Safari/604.1",
-            locale="id-ID"
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="en-US"
         )
 
         parsed_url = urllib.parse.urlparse(target_url)
         domain = parsed_url.hostname
 
-        # 3. Suntikkan cookie clearance jika didapatkan
+        # Suntikkan cookie jika ada
         if clearance_token:
-            print(f"💉 [SUKSES INJEKSI] Menyuntikkan token cf_clearance ke domain {domain}...")
+            print(f"💉 Menyuntikkan token cf_clearance ke domain {domain}...")
             context.add_cookies([{
                 "name": "cf_clearance",
                 "value": clearance_token,
@@ -177,40 +168,42 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
                 "secure": True,
                 "sameSite": "None"
             }])
-        else:
-            print("⚠️ [PERINGATAN] cf_clearance kosong! Browser akan mencoba menyelesaikan Turnstile langsung via Patchright C++.")
 
         page = context.new_page()
 
         print(f"🌐 Mengakses {target_url}...")
         t_nav = time.time()
-        page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-        
-        # Berikan waktu dan periksa apakah ada challenge
+        try:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:
+            print(f"[Nav Notice] {e}")
+
+        # Tunggu sampai halaman ter-render (katalog sneakers / search bar)
         for w in range(10):
             time.sleep(2)
             title = page.title()
             print(f"⏳ Detik {w*2}: Judul Halaman = '{title}' (URL: {page.url})")
-            if "just a moment" not in title.lower() and "tunggu sebentar" not in title.lower():
-                print("✓ Berhasil masuk dashboard CCTV tanpa tersangkut Cloudflare!")
+            if "stockx" in title.lower() or "sneakers" in title.lower() or "buy & sell" in title.lower():
+                print("✓ Berhasil masuk ke katalog StockX!")
                 break
 
+        time.sleep(3)
         title = page.title()
         curr_url = page.url
         print(f"📄 Status Akhir: Judul='{title}' | URL='{curr_url}'")
 
-        screenshot_path = "cctv_banyuasin_playwright.png"
+        screenshot_path = "target_screenshot.png"
         page.screenshot(path=screenshot_path)
         print(f"📸 Screenshot tersimpan ke '{screenshot_path}'!")
 
-        # 4. Kirim hasil screenshot ke chat Telegram Tuan Ciro sesuai SOP
-        caption = f"📹 Hasil Pembukaan CCTV Banyuasin via CFPlaywright (Chrome Extension + CFSolve Engine)\n📄 Judul: {title}\n🌐 URL: {curr_url}"
+        # Kirim hasil screenshot ke chat Telegram Tuan Ciro
+        caption = f"🛒 Hasil Pembukaan {target_url} via Patchright + Chrome Official\n📄 Judul: {title}\n🌐 URL: {curr_url}"
         send_telegram_photo(screenshot_path, caption=caption)
 
         time.sleep(2)
         browser.close()
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else "https://cctv.banyuasinkab.go.id/"
+    target = sys.argv[1] if len(sys.argv) > 1 else "https://stockx.com"
     proxy = os.environ.get("PROXY_URL", "http://hzvrsvul-rotate:je47prui48ga@p.webshare.io:80")
     open_with_playwright(target, proxy_url=proxy)
