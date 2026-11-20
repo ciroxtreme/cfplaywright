@@ -39,7 +39,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          PROXY_URL: "http://hzvrsvul-rotate:je47prui48ga@p.webshare.io:80"
+          PROXY_URL: ${{ secrets.PROXY_URL }}
           PYTHONUNBUFFERED: "1"
         run: |
           TARGET_URL="${{ github.event.inputs.target_url || 'https://stockx.com' }}"
