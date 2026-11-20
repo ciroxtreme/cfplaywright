@@ -1,0 +1,46 @@
+name: Test CCTV Banyuasin via CFPlaywright
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  run-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies & Official Chrome
+        run: |
+          pip install --no-cache-dir patchright requests
+          if ! command -v google-chrome &> /dev/null; then
+            wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+            sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq google-chrome-stable
+          fi
+          echo "Chrome ready: $(google-chrome --version)"
+          chmod +x bin/cfsolve
+
+      - name: Run CFPlaywright Banyuasin Test
+        env:
+          PROXY_URL: "http://hzvrsvul-rotate:je47prui48ga@p.webshare.io:80"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          xvfb-run -a python -u cfplaywright.py "https://cctv.banyuasinkab.go.id/"
+
+      - name: Upload Snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cctv-banyuasin-snapshot
+          path: cctv_banyuasin_playwright.png
+          if-no-files-found: ignore
