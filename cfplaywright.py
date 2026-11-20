@@ -57,8 +57,8 @@ def send_telegram_photo(photo_path: str, caption: str = ""):
 
 def solve_cloudflare_clearance(target_url: str, proxy: str = None) -> str:
     """
-    Panggil binary Rust capture_cctv / cfsolve untuk menyelesaikan Cloudflare challenge
-    dan mengembalikan token cf_clearance dalam hitungan milidetik.
+    Panggil binary Rust capture_cctv untuk menyelesaikan Cloudflare challenge
+    dan mengembalikan token cf_clearance.
     """
     out_dir = f"/tmp/cf_out_{int(time.time()*1000)}"
     if os.path.exists(out_dir):
@@ -72,34 +72,42 @@ def solve_cloudflare_clearance(target_url: str, proxy: str = None) -> str:
         bin_path,
         fp_path,
         out_dir,
-        "1"
+        "4"  # Gunakan kamera 4 (Betung) yang aktif dan tidak timeout!
     ]
 
     env = os.environ.copy()
     if proxy:
         env["CF_PROXY"] = proxy
 
-    print(f"⚡ [CFSolve Engine] Menembus Cloudflare Turnstile untuk {target_url}...")
-    t0 = time.time()
-    try:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=40)
-        elapsed = time.time() - t0
-        output = proc.stdout + proc.stderr
+    print(f"⚡ [CFSolve Engine] Menembus Cloudflare Turnstile untuk {target_url} (Egress Proxy: {proxy})...")
+    
+    # Retry hingga 3 kali
+    for attempt in range(1, 4):
+        print(f"Attempt {attempt}/3 running cfsolve...")
+        t0 = time.time()
+        try:
+            # Berikan waktu hingga 60s
+            proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
+            elapsed = time.time() - t0
+            output = proc.stdout + proc.stderr
 
-        import re
-        m = re.search(r"cf_clearance:\s*([a-zA-Z0-9_\-\.]+)", output)
-        if m:
-            token = m.group(1).strip()
-            print(f"✓ [CFSolve] Sukses ditembus dalam {elapsed:.2f}s! cf_clearance: {token[:30]}...")
-            return token
-        else:
-            print(f"[-] [CFSolve] Token tidak ditemukan di output (Exit code {proc.returncode}):")
-            print(output[:400])
-    except Exception as e:
-        print(f"[-] [CFSolve Error]: {e}")
-    finally:
-        shutil.rmtree(out_dir, ignore_errors=True)
+            import re
+            m = re.search(r"cf_clearance:\s*([a-zA-Z0-9_\-\.]+)", output)
+            if m:
+                token = m.group(1).strip()
+                print(f"✓ [CFSolve] Sukses ditembus dalam {elapsed:.2f}s! cf_clearance: {token[:30]}...")
+                shutil.rmtree(out_dir, ignore_errors=True)
+                return token
+            else:
+                print(f"[-] [CFSolve Attempt {attempt}] Token tidak ditemukan. Output:")
+                print(output[:300])
+        except subprocess.TimeoutExpired:
+            print(f"[-] [CFSolve Attempt {attempt}] Timeout 60s.")
+        except Exception as e:
+            print(f"[-] [CFSolve Attempt {attempt} Error]: {e}")
+        time.sleep(2)
 
+    shutil.rmtree(out_dir, ignore_errors=True)
     return ""
 
 def open_with_playwright(target_url: str, proxy_url: str = None):
@@ -149,8 +157,15 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
 
         # 3. Suntikkan cookie clearance jika didapatkan
         if clearance_token:
-            print(f"💉 Menyuntikkan token cf_clearance ke domain .{domain}...")
+            print(f"💉 [SUKSES INJEKSI] Menyuntikkan token cf_clearance ke domain {domain}...")
             context.add_cookies([{
+                "name": "cf_clearance",
+                "value": clearance_token,
+                "domain": f"{domain}",
+                "path": "/",
+                "secure": True,
+                "sameSite": "None"
+            }, {
                 "name": "cf_clearance",
                 "value": clearance_token,
                 "domain": f".{domain}",
@@ -158,19 +173,27 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
                 "secure": True,
                 "sameSite": "None"
             }])
+        else:
+            print("⚠️ [PERINGATAN] cf_clearance kosong! Browser akan mencoba menyelesaikan Turnstile langsung via Patchright C++.")
 
         page = context.new_page()
 
         print(f"🌐 Mengakses {target_url}...")
         t_nav = time.time()
         page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-        time.sleep(5)
+        
+        # Berikan waktu dan periksa apakah ada challenge
+        for w in range(10):
+            time.sleep(2)
+            title = page.title()
+            print(f"⏳ Detik {w*2}: Judul Halaman = '{title}' (URL: {page.url})")
+            if "just a moment" not in title.lower() and "tunggu sebentar" not in title.lower():
+                print("✓ Berhasil masuk dashboard CCTV tanpa tersangkut Cloudflare!")
+                break
 
         title = page.title()
         curr_url = page.url
-        print(f"📄 Berhasil dimuat dalam {time.time()-t_nav:.2f}s!")
-        print(f"📄 Judul Halaman: {title}")
-        print(f"📄 URL Saat Ini: {curr_url}")
+        print(f"📄 Status Akhir: Judul='{title}' | URL='{curr_url}'")
 
         screenshot_path = "cctv_banyuasin_playwright.png"
         page.screenshot(path=screenshot_path)
