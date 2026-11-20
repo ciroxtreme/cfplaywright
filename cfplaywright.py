@@ -16,6 +16,13 @@ from patchright.sync_api import sync_playwright
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 
+try:
+    from arkose import solve_arkose_on_page
+except ImportError:
+    def solve_arkose_on_page(page, proxy=None):
+        print("[-] [Arkose] Modul arkose.py tidak ada. Skip.")
+        return ""
+
 def send_telegram_photo(photo_path: str, caption: str = ""):
     if not os.path.exists(photo_path):
         return
@@ -203,6 +210,9 @@ def open_with_playwright(target_url: str, proxy_url: str = None):
 
         # Selesaikan Google reCAPTCHA v3 jika ada di DOM
         solve_recaptcha_v3_on_page(page, proxy=proxy_url)
+
+        # Selesaikan Arkose (FunCaptcha) jika ada di DOM
+        solve_arkose_on_page(page, proxy=proxy_url)
 
         # Tunggu sampai halaman ter-render
         for w in range(8):
