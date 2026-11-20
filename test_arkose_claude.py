@@ -1,18 +1,22 @@
 """
-Test driver: login Claude sampai Arkose muncul, lalu coba solver.
+Test driver: login penuh Claude via login (bukan cookie), dengan Arkose solver.
 
-Alur yang dites (sesuai yang Ciro jelasin): buka halaman login Claude, masukin
-email, kirim kode verifikasi -- pas layar masukin kode mau muncul, di situlah
-Arkose muncul. Tes ini BERHENTI di layar masukin kode: kalau layar itu muncul
-tanpa puzzle, solver berhasil (sup=1). Tidak login penuh, tidak butuh kode.
+Alur yang dites: buka halaman login Claude, masukin email, kirim kode
+verifikasi -- pas layar masukin kode mau muncul, di situlah Arkose muncul.
+Solver dicoba di titik itu; kalau layar kode muncul tanpa puzzle, lanjut
+masukin kode verifikasi sampai login penuh berhasil.
+
+Kode verifikasi diambil dari env CLAUDE_CODE, atau dari file yang ditunggu
+driver (default /tmp/claude_code.txt, bisa diubah via env CLAUDE_CODE_FILE).
+File cukup berisi 6 digit kode saja.
 
 Usage:
     python test_arkose_claude.py <email> [proxy]
-    CLAUDE_EMAIL=<email> python test_arkose_claude.py
-    ARKOSE_HEADLESS=1 python test_arkose_claude.py <email>
+    CLAUDE_EMAIL=<email> ARKOSE_HEADLESS=1 python test_arkose_claude.py
 
-Email TIDAK boleh di-hardcode -- selalu lewat argv/env.
-Hasil akhir dicetak sebagai: [ARKOSE-TEST] RESULT: <SUPPRESSED|CHALLENGED|NO-ARKOSE|UNKNOWN|ERROR>
+Email dan kode TIDAK boleh di-hardcode -- selalu lewat argv/env/file.
+Hasil akhir dicetak sebagai:
+[ARKOSE-TEST] RESULT: <LOGIN-SUCCESS|LOGIN-FAILED|CODE-TIMEOUT|SUPPRESSED|CHALLENGED|NO-ARKOSE|UNKNOWN|ERROR>
 """
 
 import os
@@ -25,12 +29,8 @@ from patchright.sync_api import sync_playwright
 from arkose import solve_arkose_on_page, is_arkose_present
 
 LOGIN_URL = "https://claude.ai/login"
-
-try:
-    from cfplaywright import send_telegram_photo
-except ImportError:
-    def send_telegram_photo(path, caption=""):
-        print("[-] Telegram send tidak tersedia (cfplaywright tidak ke-import).")
+CODE_FILE = os.environ.get("CLAUDE_CODE_FILE", "/tmp/claude_code.txt")
+CODE_WAIT_SECONDS = int(os.environ.get("CLAUDE_CODE_WAIT", "300"))
 
 
 def _first_visible(page, selectors, timeout=15000):
@@ -45,22 +45,25 @@ def _first_visible(page, selectors, timeout=15000):
     return None
 
 
+def _code_screen_present(page) -> bool:
+    try:
+        n = page.locator(
+            'input[inputmode="numeric"], input[autocomplete="one-time-code"],'
+            ' input[name*="code" i], input[aria-label*="code" i]').count()
+        if n > 0:
+            return True
+        return bool(re.search(r"enter (the|your) code|check your email|verification code",
+                              (page.content() or "").lower()))
+    except Exception:
+        return False
+
+
 def assess_outcome(page):
-    """SUPPRESSED / CHALLENGED / NO-ARKOSE / UNKNOWN after the solve attempt."""
+    """SUPPRESSED / CHALLENGED / UNKNOWN after the solve attempt."""
     try:
         body = (page.content() or "").lower()
     except Exception:
         body = ""
-    code_input = 0
-    try:
-        code_input = page.locator(
-            'input[inputmode="numeric"], input[autocomplete="one-time-code"],'
-            ' input[name*="code" i], input[aria-label*="code" i]').count()
-    except Exception:
-        pass
-    code_text = bool(re.search(r"enter (the|your) code|check your email|verification code",
-                               body))
-    code_screen = code_input > 0 or code_text
     puzzle = False
     try:
         puzzle = bool(page.evaluate("""() => {
@@ -75,9 +78,54 @@ def assess_outcome(page):
         puzzle = "arkose" in body and "verify" in body
     if puzzle:
         return "CHALLENGED"
-    if code_screen:
+    if _code_screen_present(page):
         return "SUPPRESSED"
     return "UNKNOWN"
+
+
+def _wait_for_code(timeout=CODE_WAIT_SECONDS):
+    """6-digit code from env, else poll CODE_FILE. Returns '' on timeout."""
+    env_code = os.environ.get("CLAUDE_CODE", "").strip()
+    if re.fullmatch(r"\d{6}", env_code):
+        return env_code
+    print(f"[*] [Arkose-Test] WAITING-FOR-CODE (file {CODE_FILE}, max {timeout}s)...",
+          flush=True)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with open(CODE_FILE) as f:
+                m = re.search(r"\d{6}", f.read())
+            if m:
+                return m.group(0)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+        time.sleep(5)
+    return ""
+
+
+def _fill_code(page, code: str) -> bool:
+    """Fill the 6-digit code: single input first, else 6 one-char boxes."""
+    try:
+        single = page.locator(
+            'input[autocomplete="one-time-code"], input[inputmode="numeric"]').first
+        if single.count() > 0:
+            single.click()
+            single.fill(code)
+            return True
+    except Exception:
+        pass
+    try:
+        boxes = page.locator('input[maxlength="1"]')
+        if boxes.count() >= 6:
+            for i, ch in enumerate(code[:6]):
+                boxes.nth(i).click()
+                boxes.nth(i).fill(ch)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def main():
@@ -88,6 +136,9 @@ def main():
         print("  atau set env CLAUDE_EMAIL. Email tidak boleh di-hardcode.")
         return "ERROR"
     headless = os.environ.get("ARKOSE_HEADLESS", "") == "1"
+    # Channel Chrome default; kosongkan (ARKOSE_CHROME_CHANNEL="") untuk
+    # memakai Chromium bawaan patchright (berguna buat tes lokal tanpa Chrome).
+    channel = os.environ.get("ARKOSE_CHROME_CHANNEL", "chrome") or None
 
     proxy_cfg = None
     if proxy:
@@ -101,7 +152,7 @@ def main():
     result = "ERROR"
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            channel="chrome", headless=headless, proxy=proxy_cfg,
+            channel=channel, headless=headless, proxy=proxy_cfg,
             args=["--no-sandbox", "--disable-setuid-sandbox",
                   "--disable-dev-shm-usage", "--window-size=1280,800"])
         context = browser.new_context(
@@ -128,7 +179,7 @@ def main():
                     result = "UNKNOWN"
                 else:
                     email_box.fill(email)
-                    print(f"[*] Email diisi, klik lanjut...")
+                    print("[*] Email diisi, klik lanjut...")
                     btn = _first_visible(page, [
                         'button[type="submit"]',
                         'button:has-text("Continue with email")',
@@ -149,11 +200,10 @@ def main():
                     token = solve_arkose_on_page(page, proxy=proxy or None)
                     time.sleep(5)
                     if token:
-                        result = assess_outcome(page)
-                        # sup=1 tanpa puzzle + layar kode = SUPPRESSED;
-                        # assess_outcome sudah membedakan puzzle vs layar kode.
-                        if result == "SUPPRESSED":
+                        arkose_result = assess_outcome(page)
+                        if arkose_result == "SUPPRESSED":
                             print("✓ [Arkose] Layar kode muncul TANPA puzzle.")
+                        result = arkose_result
                     else:
                         if is_arkose_present(page):
                             result = "CHALLENGED"
@@ -163,10 +213,45 @@ def main():
                             result = assess_outcome(page)
                             if result == "SUPPRESSED":
                                 print("[*] Layar kode muncul tanpa Arkose sama sekali.")
+                    # --- login penuh: masukin kode verifikasi ---
+                    if result == "SUPPRESSED" and _code_screen_present(page):
+                        code = _wait_for_code()
+                        if not code:
+                            print("[-] Kode verifikasi tidak datang tepat waktu.")
+                            result = "CODE-TIMEOUT"
+                        elif _fill_code(page, code):
+                            print("[*] Kode diisi, submit...")
+                            submit = _first_visible(page, [
+                                'button[type="submit"]',
+                                'button:has-text("Verify")',
+                                'button:has-text("Continue")'], timeout=10000)
+                            if submit:
+                                submit.click()
+                            else:
+                                page.keyboard.press("Enter")
+                            logged_in = False
+                            for _ in range(10):
+                                time.sleep(2)
+                                if "/login" not in page.url:
+                                    logged_in = True
+                                    break
+                            if logged_in:
+                                print(f"✓ [Arkose-Test] LOGIN PENUH BERHASIL: {page.url}")
+                                result = "LOGIN-SUCCESS"
+                            else:
+                                print("[-] Masih di halaman login setelah submit kode.")
+                                result = "LOGIN-FAILED"
+                        else:
+                            print("[-] Kolom kode tidak ketemu buat diisi.")
+                            result = "LOGIN-FAILED"
                     page.screenshot(path="arkose_claude_result.png")
-                    send_telegram_photo(
-                        "arkose_claude_result.png",
-                        caption=f"🧩 Arkose test Claude: {result} | {page.url}")
+                    try:
+                        from cfplaywright import send_telegram_photo
+                        send_telegram_photo(
+                            "arkose_claude_result.png",
+                            caption=f"🧩 Arkose test Claude: {result} | {page.url}")
+                    except Exception as e:
+                        print(f"[-] Telegram send skip: {e}")
         except Exception as e:
             print(f"[-] [Arkose-Test Error]: {e}")
             result = "ERROR"
@@ -182,4 +267,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(0 if main() in ("SUPPRESSED", "NO-ARKOSE") else 1)
+    sys.exit(0 if main() in ("LOGIN-SUCCESS", "SUPPRESSED", "NO-ARKOSE") else 1)
